@@ -3,14 +3,12 @@
 mesh tally tools
 
 """
-import matplotlib as mpl
 import matplotlib.pyplot as plt
 from matplotlib import colors
 import numpy as np
 import argparse
 import logging as ntlogger
 import pandas as pd
-mpl.use('Agg')
 
 
 class meshtally:
@@ -50,14 +48,27 @@ class meshtally:
         num_z = len(self.z_mids)
         return (num_x * num_y * num_z)
 
+    def calculate_upper_mesh_vals(self):
+        """ adds the absolute max value based on the relative error """
+        maxvals = self.data["value"] + (
+            self.data["value"] * self.data["rel_err"])
+        self.data["max_vals"] = maxvals
+
+        return self
+
+    def calculate_lower_mesh_vals(self):
+        """ adds the absolute min value based on the relative error """
+        minvals = self.data["value"] - (
+            self.data["value"] * self.data["rel_err"])
+        self.data["min_vals"] = minvals
+
+        return self
+
     def __add__(self, other):
         """Add two meshtally objects with matching bounds.
-
         Fluxes are summed and relative errors are combined in quadrature.
-
         Args:
             other (meshtally): mesh tally to add
-
         Returns:
             meshtally: new mesh tally with combined values
         """
@@ -108,13 +119,10 @@ class meshtally:
 
     def __iadd__(self, other):
         """Augmented addition (+=): combines this mesh with another.
-
         Returns a new meshtally rather than modifying in place, consistent
         with how immutable-style data objects behave in Python.
-
         Args:
             other (meshtally): mesh tally to add
-
         Returns:
             meshtally: new mesh tally with combined values
         """
@@ -147,9 +155,9 @@ class meshtally:
             float - average voxel volume
         """
         # find min x y z and max x y z respectively
-        x = np.abs(np.diff(np.max(self.x_bounds), np.min(self.x_bounds)))
-        y = np.abs(np.diff(np.max(self.y_bounds), np.min(self.y_bounds)))
-        z = np.abs(np.diff(np.max(self.z_bounds), np.min(self.z_bounds)))
+        x = abs(float(max(self.x_bounds)) - float(min(self.x_bounds)))
+        y = abs(float(max(self.y_bounds)) - float(min(self.y_bounds)))
+        z = abs(float(max(self.z_bounds)) - float(min(self.z_bounds)))
         return (x * y * z) / (self.number_voxels())
 
 
@@ -166,27 +174,10 @@ class slice_object:
         self.value = None
 
 
-def check_uniform(bounds):
-    """checks if elements in list are equally spaced
-    Args:
-        bounds (list): list of bounds
-    Returns:
-        bool: true if uniformly spaced
-    """
-    if not bounds:
-        # check for empty list
-        return False
-
-    # calculate the difference
-    diff = np.diff(list(map(float, bounds)))
-    # check if all differences are close
-    return np.allclose(diff, diff[0])
-
-
-def rel_err_hist(df, fname=None):
+def rel_err_hist(df, fname=None, bins=15):
     """ Plots a histogram of the relative errors"""
 
-    plot, = df.hist(column='rel_err', bins=15)
+    plot, = df.hist(column='rel_err', bins=bins)
     plt.xlabel("Relative error")
     plt.ylabel("Number of voxels")
     if fname:
@@ -210,7 +201,16 @@ def filter_energy_time(data, erg=None, time=None):
 # TODO: need to generalize to any axis
 # plot slice calls extract slice
 def extract_slice(mesh, value, plane, erg=None, time=None):
-    """ from a given plane will find the slice of a mesh"""
+    """ From a given plane will find the slice of a mesh.
+
+    For energy- or time-binned meshes the *erg* or *time* keyword must be
+    supplied so that ``filter_energy_time`` reduces the data to a single bin
+    before pivoting.  Pass the desired energy or time midpoint value, e.g.
+    ``extract_slice(mesh, 0, "XY", erg=1e36)`` for the total energy bin.
+    If the filtered data still contains duplicate (i_ind, j_ind) pairs a
+    ``ValueError`` will be raised by ``pivot``; this indicates the energy/time
+    filter did not reduce the data to a single bin.
+    """
     data = mesh.data
     slice_obj = slice_object()
     # filter by energy/time if needed
@@ -245,20 +245,16 @@ def extract_slice(mesh, value, plane, erg=None, time=None):
         slice_obj.j_lab = "Z co-ord (cm)"
     else:
         # Catch plane not recognised
-        raise ValueError(f"Plane not recognised format : XZ, XY, YZ")
+        raise ValueError("Plane not recognised format : XZ, XY, YZ")
 
     # find closest mid point
     slice_obj.value = find_nearest_mid(value, slice_obj.axis_mids)
 
     # filter to just the values in the plane
     data = data[data[v_ind] == slice_obj.value]
-    # create a 2d array of just values matching corresponding axis
-    for i in slice_obj.slice_i:
-        slice_obj.values.append((data.loc[data[i_ind] == i]['value']))
-        slice_obj.errors.append((data.loc[data[j_ind] == i]['rel_err']))
-
-    slice_obj.values = np.array(slice_obj.values).T
-    slice_obj.errors = np.array(slice_obj.errors).T
+    # pivot to 2D arrays: rows = j_ind, columns = i_ind (matches pcolormesh convention)
+    slice_obj.values = data.pivot(index=j_ind, columns=i_ind, values='value').to_numpy()
+    slice_obj.errors = data.pivot(index=j_ind, columns=i_ind, values='rel_err').to_numpy()
 
     return slice_obj
 
@@ -304,11 +300,6 @@ def plot_slice(mesh, value, plane, lmin, lmax, err=False, fname=None, erg=None,
 def output_as_vtk():
     """ """
     ntlogger.debug("not ready yet")
-
-
-def find_nearest_mid(value, mids):
-    """ finds midpoint with shortest absoloute distance to the value """
-    return mids[min(range(len(mids)), key=lambda i: abs(mids[i] - value))]
 
 
 def convert_to_df(mesh):
@@ -393,24 +384,6 @@ def pick_point(x, y, z, mesh, erg=None, time=None):
     return result
 
 
-def calculate_upper_mesh_vals(mesh1):
-    """ adds the absoute max value based on the relative error """
-    maxvals = mesh1.data["value"] + (
-        mesh1.data["value"] * mesh1.data["rel_err"])
-    mesh1.data["max_vals"] = maxvals
-
-    return mesh1
-
-
-def calculate_lower_mesh_vals(mesh1):
-    """ adds the absoute min value based on the relative error """
-    minvals = mesh1.data["value"] - (
-        mesh1.data["value"] * mesh1.data["rel_err"])
-    mesh1.data["min_vals"] = minvals
-
-    return mesh1
-
-
 def add_mesh(mesh1, mesh2):
     """ checks if boundaries of two meshes are equal
         and adds their values and errors.
@@ -453,9 +426,31 @@ def calc_mid_points(bounds):
     return mids.tolist()
 
 
+def find_nearest_mid(value, mids):
+    """ finds midpoint with shortest absoloute distance to the value """
+    return mids[min(range(len(mids)), key=lambda i: abs(mids[i] - value))]
+
+
+def check_uniform(bounds):
+    """checks if elements in list are equally spaced
+    Args:
+        bounds (list): list of bounds
+    Returns:
+        bool: true if uniformly spaced
+    """
+    if not bounds:
+        # check for empty list
+        return False
+
+    # calculate the difference
+    diff = np.diff(list(map(float, bounds)))
+    # check if all differences are close
+    return np.allclose(diff, diff[0])
+
+
 def count_zeros(mesh):
     """ counts number of voxels with a zero value"""
-    count = mesh.data["value"].value_counts()[0.0]
+    count = int((mesh.data["value"] == 0.0).sum())
     return count
 
 

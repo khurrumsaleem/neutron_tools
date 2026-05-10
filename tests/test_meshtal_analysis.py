@@ -1,6 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-
 from neutron_tools.mcnp import meshtal_analysis as ma
 import unittest
 import os
@@ -32,7 +29,7 @@ class calc_mid_points_test(unittest.TestCase):
 
 class convert_to_df_test(unittest.TestCase):
 
-    def test_count_zeros_6col(self):
+    def test_df_convert_6col(self):
         meshtally_test = ma.meshtally()
         meshtally_test.ctype = "6col_e"
         meshtally_test.data = [['1.00', '3.00', '-2.00', '5.00', '0.00',
@@ -46,7 +43,7 @@ class convert_to_df_test(unittest.TestCase):
         self.assertEqual(meshtally_test.data['z'].iloc[0], 5.00)
         self.assertEqual(meshtally_test.data['rel_err'].iloc[0], 1.00)
 
-    def test_count_zeros_5col(self):
+    def test_df_convert_5col(self):
         meshtally_test = ma.meshtally()
         meshtally_test.ctype = "5col"
         meshtally_test.data = [['3.00', '-2.00', '5.00', '0.00',
@@ -405,7 +402,7 @@ class upper_vals_test(unittest.TestCase):
 
     def test_upper_vals_file(self):
         mesh = ma.read_meshtally_file(path)[0]
-        mesh = ma.calculate_upper_mesh_vals(mesh)
+        mesh = mesh.calculate_upper_mesh_vals()
         value = mesh.data["max_vals"].iloc[0]
         self.assertAlmostEqual(value, 6.50278e-7)
 
@@ -414,7 +411,7 @@ class lower_vals_test(unittest.TestCase):
 
     def test_lower_vals_file(self):
         mesh = ma.read_meshtally_file(path)[0]
-        mesh = ma.calculate_lower_mesh_vals(mesh)
+        mesh = mesh.calculate_lower_mesh_vals()
         value = mesh.data["min_vals"].iloc[0]
         self.assertAlmostEqual(value, 6.2608e-7)
 
@@ -423,7 +420,7 @@ class err_hist_tests(unittest.TestCase):
 
     def test_err_hist(self):
         mesh = ma.read_meshtally_file(path)[0]
-        plot = ma.rel_err_hist(mesh.data)
+        plot = ma.rel_err_hist(mesh.data, fname="out.png")
         # x_plot, y_plot = plot.get_xydata().T
         self.assertEqual(plot.get_xlabel(), "Relative error")
         self.assertEqual(plot.get_ylabel(), "Number of voxels")
@@ -476,11 +473,42 @@ class slice_tests(unittest.TestCase):
         value = 1
         plane = "XY"
         slices = ma.plot_slice(mesh, value, plane, lmin=1e-15, lmax=1e-3,
-                               erg=1e36)
+                               erg=1e36, fname="out.png")
         self.assertEqual(slices.i_lab, "X co-ord (cm)")
         self.assertEqual(slices.j_lab, "Y co-ord (cm)")
         self.assertEqual(slices.slice_i[0], -9.0)
         self.assertEqual(slices.slice_j[0], -9.0)
+
+    def test_extract_slice_errors_match_values(self):
+        """Verify that the errors array is filtered on the i-axis (not j-axis).
+
+        The bug was that slice_obj.errors used data[j_ind] == i instead of
+        data[i_ind] == i, causing wrong relative-error values in the slice.
+        """
+        mesh = ma.read_meshtally_file(path)[0]
+        slice_obj = ma.extract_slice(mesh, 1.0, "XY", erg=1e36)
+
+        # shapes must match: (len(slice_j), len(slice_i))
+        self.assertEqual(slice_obj.values.shape, slice_obj.errors.shape)
+        self.assertEqual(slice_obj.values.shape,
+                         (len(slice_obj.slice_j), len(slice_obj.slice_i)))
+
+        # Errors must be non-negative and within [0, 1] for a valid mesh
+        self.assertTrue((slice_obj.errors >= 0).all())
+        self.assertTrue((slice_obj.errors <= 1).all())
+
+        # Cross-check: manually pick a known point and compare
+        # The first x_mid is -9.0, and first y_mid at z~1 should match
+        # extract_slice values[col=0] with values where x == x_mids[0]
+        data = mesh.data
+        data = data[data["Energy"] == 1e36]
+        z_slice = ma.find_nearest_mid(1.0, mesh.z_mids)
+        data = data[data["z"] == z_slice]
+        x0 = mesh.x_mids[0]
+        expected_err = data.loc[data["x"] == x0]["rel_err"].values
+        actual_err = slice_obj.errors[:, 0]
+        for exp, act in zip(expected_err, actual_err):
+            self.assertAlmostEqual(float(exp), float(act), places=7)
 
 
 if __name__ == '__main__':
